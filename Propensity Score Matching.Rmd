@@ -1,0 +1,128 @@
+---
+title: "Propensity Score Matching"
+author: "Álvaro Amorós y Javier Carrero"
+date: "16/12/2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+library(MatchIt)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(Ecdat)
+data("Schooling")
+
+Schooling <- Schooling %>%
+  mutate(race = ifelse(black == "yes", 1, 0),
+         card = ifelse(libcrd14 == "yes", 1, 0),
+         college = ifelse(nearc4 == "yes", 1, 0),
+         city = ifelse(smsa66 == "yes", 1, 0),
+         south = ifelse(south76 == "yes", 1, 0))
+
+```
+For this asssigment we will use the R dataset "Schooling", which we used for our first assigment.    
+We will messure the effect that growing up close to a colledge has on the labour market outcoomes of individuals, as we assume that individuals which greew up close to a university are different tah those that didnt. TO do so, individuals who greaw up close to a university will be ur "treat" groupe, and those who did not will be our control.   
+
+First we will test if the differences in mean between both groups is statistically significant.
+
+
+
+```{r 1, echo=FALSE}
+Schooling %>%
+  group_by(college) %>%
+  summarise(n_respondents = n(),
+            mean_log_wage = mean(lwage76),
+            std_error = sd(lwage76) / sqrt(n_respondents))
+
+with(Schooling, t.test(lwage76 ~ college))
+
+```
+
+
+We will continue by adding a set of covariates to our model ("daded", "iqscore", "race", "college", "city") and test if the means for each tretment grup aare significantly different. We can reject H0 for all our variables, meaning that the treatment has statistically signifcant efect on all our covariables.
+```{r 2, echo=FALSE}
+cov <- c("daded", "iqscore", "race", "south")
+
+Schooling %>%
+  group_by(college) %>%
+  select(one_of(cov)) %>%
+  summarise_all(funs(mean(., na.rm = T)))
+
+lapply(cov, function(v) {
+  t.test(Schooling[, v] ~ Schooling[,'college'])
+})
+
+```
+
+### Propensity Score estimation
+We will rune a logit model to estimate the Propensity Score, the outcome variable will be our treatment.
+```{r 3, echo=FALSE}
+ps <- glm(college ~ daded + iqscore + race + south,
+          family = binomial(), data = Schooling)
+summary(ps)
+
+```
+
+Now we can obtain the propensity score of each respondent, this is, the respondent predicted probability of being "treated", given the estimates
+of our logit model. WE can use histograms to of the estimate propensity scores by treatment groups, and chek if the distributions have enough similarity to be able to pair respondents by treatment.
+
+```{r 4, echo=FALSE}
+prs_df <- data.frame(pr_score = predict(ps, type = "response"),
+                     college = ps$model$college)
+
+
+labs <-  c("Lived close to college: YES", "Lived close to college: No")
+
+prs_df %>%
+  mutate(uni = ifelse(college == 1, labs[1], labs[2])) %>%
+  ggplot(aes(x = pr_score)) +
+  geom_histogram(color = "white") +
+  facet_wrap(~ uni) +
+  xlab("Probability of having a librery card")
+
+```
+
+
+### Executing Matching   
+To match respondents with similar Propensity Scores but different treatment we chose will use the R MatchIt pakage. We will use replacement in the matching as our sample size is small. WE will also use the method "exact" whch trims uot respondents wich deviate strongly from theire clossest match, this will reduce slightly oru samplesize but increase our balance (chek how this actually works)
+```{r 5, echo=FALSE}
+Schooling_nomiss <-Schooling %>%
+  select(college, lwage76, one_of(cov)) %>%
+  na.omit()
+
+mod_match <- matchit(college ~ daded + iqscore + race + south,
+                     method = "exact", data = Schooling_nomiss, replace = TRUE)
+
+dta_m <- match.data(mod_match)
+dim(dta_m)
+
+```
+
+
+### Difference-in-means
+The results below show that we have attained a high degree of balance in 3 of our 4 covariates.
+```{r 6, echo=FALSE}
+dta_m %>%
+  group_by(college) %>%
+  select(one_of(cov)) %>%
+  summarise_all(funs(mean))
+
+
+lapply(cov, function(v) {
+  t.test(dta_m[, v] ~ dta_m$college)
+})
+
+```
+
+### Estimating treatment effects
+Ones we have matched the sample we can easily estimate the treatment effects
+
+```{r 7, echo=FALSE}
+
+
+with(dta_m, t.test(lwage76 ~ college))
+
+```
